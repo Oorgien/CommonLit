@@ -1,7 +1,6 @@
 import os
 import gc
 import sys
-import cv2
 import math
 import time
 import tqdm
@@ -32,8 +31,6 @@ from transformers import (AutoModel, AutoTokenizer,
                           AutoModelForSequenceClassification)
 from transformers import (RobertaTokenizer, RobertaModel)
 
-from .utils import dotdict
-
 
 def rmse_score(y_true, y_pred):
     return np.sqrt(mean_squared_error(y_true, y_pred))
@@ -48,18 +45,19 @@ def prepare_data(config):
     config.test_data = test_data
     config.sample = sample
 
-    num_bins = int(np.floor(1 + np.log2(len(train_data))))
-    train_data.loc[:, 'bins'] = pd.cut(train_data['target'], bins=num_bins, labels=False)
-
     target = train_data['target'].to_numpy()
     target_normed = (target - np.mean(target)) / np.var(target)
-    bins = train_data.bins.to_numpy()
+    config.target_mean = np.mean(target)
+    config.target_var = np.var(target)
+    train_data['target_normed'] = target_normed
 
     X_train, X_test, y_train, y_test = train_test_split(
-        train_data.drop(['target', 'url_legal', 'license', 'standard_error', 'bins'], 1),
-        target_normed, test_size=0.33, random_state=42)
+        train_data,
+        pd.DataFrame(train_data['target_normed']), test_size=0.33, random_state=config.seed)
 
-    return X_train, X_test, y_train, y_test
+    return X_train, X_test, \
+           y_train.rename(columns={"target_normed": "target"}), \
+           y_test.rename(columns={"target_normed": "target"})
 
 
 def init_loaders(config):
@@ -67,8 +65,8 @@ def init_loaders(config):
 
     tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
 
-    train_dataset = CustomDataset(X_train, y_train, tokenizer, config)
-    test_dataset = CustomDataset(X_test, y_test, tokenizer, config)
+    train_dataset = CLRPDataset(X_train, y_train, tokenizer, config)
+    test_dataset = CLRPDataset(X_test, y_test, tokenizer, config)
 
     train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=config.batch_size, shuffle=False)
@@ -76,20 +74,23 @@ def init_loaders(config):
     return train_loader, test_loader
 
 
-class CustomDataset(Dataset):
-    def __init__(self, data, target, tokenizer, config):
-        super(Dataset).__init__()
-        self.data = [(row[1]['id'], row[1]['excerpt']) for row in data.iterrows()]
-        self.target = target
-        self.tokenizer = tokenizer
+class CLRPDataset(Dataset):
+    def __init__(self, X, y, tokenizer, config):
+        self.excerpt = X['excerpt'].to_numpy()
+        self.targets = y['target'].to_numpy()
         self.max_len = config.max_len
-
-    def __len__(self):
-        return len(self.data)
+        self.tokenizer = tokenizer
 
     def __getitem__(self, idx):
-        encode = self.tokenizer(self.data[idx][1], return_tensors='pt',
+        encode = self.tokenizer(self.excerpt[idx],
+                                return_tensors='pt',
                                 max_length=self.max_len,
-                                padding='max_length', truncation=True)
-        return self.data[idx][0], encode, self.target
+                                padding='max_length',
+                                truncation=True)
+
+        target = torch.tensor(self.targets[idx], dtype=torch.float)
+        return encode, target
+
+    def __len__(self):
+        return len(self.excerpt)
 

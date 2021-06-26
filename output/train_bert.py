@@ -1,7 +1,6 @@
 import os
 import gc
 import sys
-import cv2
 import math
 import time
 import tqdm
@@ -33,7 +32,8 @@ from transformers import (AutoModel, AutoTokenizer,
 from transformers import (RobertaTokenizer, RobertaModel)
 
 from utils import dotdict
-
+from prepare_data import *
+from models.bert_model import BertTrainer, run
 
 def seed_everything(seed=42):
     random.seed(seed)
@@ -49,9 +49,17 @@ if __name__ == "__main__":
 
     config = dotdict({
         'seed': 42,
-        'batch_size': 10,
-        'lr': 1e-5,
-        'max_len': 64,
+
+        'batch_size': 14,
+        'epochs': 10,
+        'eval_step': 50,
+        'logdir': 'runs',
+
+        'lr': 2e-5,
+        'lr_coef': 0.5,
+        'lr_interval': 50,
+
+        'max_len': 256,
         'train_data_path': '../input/commonlitreadabilityprize/train.csv',
         'test_data_path': '../input/commonlitreadabilityprize/test.csv',
         'sample_path': '../input/commonlitreadabilityprize/sample_submission.csv'
@@ -59,3 +67,10 @@ if __name__ == "__main__":
 
     config.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     seed_everything(seed=config.seed)
+
+    train_loader, test_loader = init_loaders(config)
+
+    bert_trainer = BertTrainer(config, train_loader, test_loader)
+    bert_trainer.train()
+
+    run(config, train_loader, test_loader)
