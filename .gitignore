@@ -1,5 +1,6 @@
 # Dirs
 runs/
+checkpoints/
 
 # Editors
 .vscode/

@@ -102,6 +102,7 @@ class BertTrainer:
 
         self.writer = SummaryWriter(
             log_dir=os.path.join(self.logdir) if self.logdir != '' else None)
+        self.best_test_loss = 999999
 
     def resume_training(self):
         if os.path.isfile(self.resume):
@@ -114,8 +115,13 @@ class BertTrainer:
             print("=> loaded checkpoint '{}' (epoch {})"
                   .format(self.resume, checkpoint['epoch']))
 
-    def save_checkpoint(self, epoch, model_dir, filename='checkpoint.pth.tar'):
-        save_dir = os.path.join(self.checkpoint_dir, model_dir)
+    def save_checkpoint(self, epoch, fold, filename='checkpoint.pth.tar'):
+        save_dir = os.path.join(
+                    os.path.join(self.checkpoint_dir, self.model_name),
+                    f'model{fold}')
+        if not os.path.isdir(save_dir):
+            os.makedirs(save_dir)
+
         state = {
                 'epoch': epoch,
                 'state_dict': self.model.state_dict(),
@@ -145,54 +151,52 @@ class BertTrainer:
     def train_epoch(self, epoch):
         self.model.train()
         train_losses = []
-        best_test_loss = 999999
-        with tqdm(desc="Batch", total=len(self.train_loader)) as progress:
-            for i, (X_batch, y_batch) in enumerate(self.train_loader):
-                self.optimizer.zero_grad()
+        for i, (X_batch, y_batch) in enumerate(self.train_loader):
+            self.optimizer.zero_grad()
 
-                y_batch = torch.Tensor(y_batch.float()).to(self.device)
-                inputs = {key: val.reshape(val.shape[0], -1).to(self.device) for key, val in X_batch.items()}
+            y_batch = torch.Tensor(y_batch.float()).to(self.device)
+            inputs = {key: val.reshape(val.shape[0], -1).to(self.device) for key, val in X_batch.items()}
+            y_pred = self.model(**inputs)
 
-                y_pred = self.model(**inputs)
-                # print(y_pred.detach().cpu().numpy(), y_batch)
-                loss = self.loss_fn(y_pred, y_batch)
-                loss.backward()
-                self.optimizer.step()
+            # print(y_pred.detach().cpu().numpy(), y_batch)
+            loss = self.loss_fn(y_pred, y_batch)
+            loss.backward()
 
-                if self.lr_scheduler:
-                    self.lr_scheduler.step()
-                else:
-                    self.adjust_lr(i)
+            self.optimizer.step()
+            if self.lr_scheduler:
+                self.lr_scheduler.step()
+            else:
+                self.adjust_lr(i)
 
-                train_losses.append(loss.item())
+            train_losses.append(loss.item())
 
-                # Logging
-                counter = epoch * len(self.train_loader) + i
-                if ((i+1) % self.eval_step == 0) or ((i + 1) == len(self.train_loader)):
-                    print(f"[Epoch {epoch}] Train loss: ", np.mean(train_losses), '\n')
-                    eval_loss = self.evaluate(epoch)
-                    self.writer.add_scalar("Train loss", np.mean(train_losses), counter)
-                    self.writer.add_scalar("Test loss", eval_loss, counter)
-                    if eval_loss < best_test_loss:
-                        self.save_checkpoint(epoch, model_dir=self.model_name + str(self.fold))
-                progress.update(1)
+            # Logging
+            counter = epoch * len(self.train_loader) + i
+
+            if ((i+1) == len(self.train_loader)):
+                print(f"[Epoch {epoch}] Train loss: ", np.mean(train_losses), '\n')
+                eval_loss = self.evaluate(epoch)
+                self.writer.add_scalar("Train loss", np.mean(train_losses), counter)
+                self.writer.add_scalar("Test loss", eval_loss, counter)
+
+                if eval_loss < self.best_test_loss:
+                    self.best_test_loss = eval_loss
+                    self.save_checkpoint(epoch, fold=self.fold)
+
 
     def evaluate(self, epoch):
         test_losses = []
         self.model.eval()
         with torch.no_grad():
-            with tqdm(desc="Batch", total=len(self.test_loader)) as progress:
-                for i,(X_batch, y_batch) in enumerate(self.test_loader):
+            for i,(X_batch, y_batch) in enumerate(self.test_loader):
+                y_batch = torch.Tensor(y_batch.float()).to(self.device)
 
-                    y_batch = torch.Tensor(y_batch.float()).to(self.device)
+                inputs = {key: val.reshape(val.shape[0], -1).to(self.device) for key, val in X_batch.items()}
 
-                    inputs = {key: val.reshape(val.shape[0], -1).to(self.device) for key, val in X_batch.items()}
+                y_pred = self.model(**inputs)
+                loss = self.loss_fn(y_pred, y_batch)
+                test_losses.append(loss.item())
 
-                    y_pred = self.model(**inputs)
-                    loss = self.loss_fn(y_pred, y_batch)
-                    test_losses.append(loss.item())
-
-                    progress.update(1)
         print(f"[Epoch {epoch}] Validation loss: ", np.mean(test_losses), '\n')
         return np.mean(test_losses)
 
