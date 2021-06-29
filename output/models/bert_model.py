@@ -89,10 +89,10 @@ class Model(nn.Module):
 
 
 class BertTrainer:
-    def __init__(self, config, train_loader, test_loader):
-        self.__dict__ = config
-        self.model = Model().to(config.device)
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=config.lr, weight_decay=0.01)
+    def __init__(self, args, train_loader, test_loader):
+        self.__dict__ = args
+        self.model = Model().to(args.device)
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=args.lr, weight_decay=0.01)
         # self.lr_scheduler = get_cosine_schedule_with_warmup(
         #     self.optimizer, num_warmup_steps=0, num_training_steps= 10 * len(train_loader))
         self.lr_scheduler = None
@@ -102,6 +102,27 @@ class BertTrainer:
 
         self.writer = SummaryWriter(
             log_dir=os.path.join(self.logdir) if self.logdir != '' else None)
+
+    def resume_training(self):
+        if os.path.isfile(self.resume):
+            print("=> loading checkpoint '{}'".format(self.resume))
+            checkpoint = torch.load(self.resume)
+            self.start_epoch = checkpoint['epoch']
+            self.best_test_loss = checkpoint['best_test_loss']
+            self.model.load_state_dict(checkpoint['state_dict'])
+            self.optimizer.load_state_dict(checkpoint['optimizer'])
+            print("=> loaded checkpoint '{}' (epoch {})"
+                  .format(self.resume, checkpoint['epoch']))
+
+    def save_checkpoint(self, epoch, model_dir, filename='checkpoint.pth.tar'):
+        save_dir = os.path.join(self.checkpoint_dir, model_dir)
+        state = {
+                'epoch': epoch,
+                'state_dict': self.model.state_dict(),
+                'best_test_loss': self.best_test_loss,
+                'optimizer': self.optimizer.state_dict(),
+            }
+        torch.save(state, os.path.join(save_dir, filename))
 
     def loss_fn(self, outputs, targets):
         outputs = outputs.view(-1)
@@ -124,6 +145,7 @@ class BertTrainer:
     def train_epoch(self, epoch):
         self.model.train()
         train_losses = []
+        best_test_loss = 999999
         with tqdm(desc="Batch", total=len(self.train_loader)) as progress:
             for i, (X_batch, y_batch) in enumerate(self.train_loader):
                 self.optimizer.zero_grad()
@@ -151,7 +173,8 @@ class BertTrainer:
                     eval_loss = self.evaluate(epoch)
                     self.writer.add_scalar("Train loss", np.mean(train_losses), counter)
                     self.writer.add_scalar("Test loss", eval_loss, counter)
-
+                    if eval_loss < best_test_loss:
+                        self.save_checkpoint(epoch, model_dir=self.model_name + str(self.fold))
                 progress.update(1)
 
     def evaluate(self, epoch):
@@ -174,7 +197,7 @@ class BertTrainer:
         return np.mean(test_losses)
 
 
-def run(config, train_loader, test_loader, verbose=True):
+def run(args, train_loader, test_loader, verbose=True):
     def loss_fn(outputs, targets):
         outputs = outputs.view(-1)
         targets = targets.view(-1)
@@ -217,7 +240,7 @@ def run(config, train_loader, test_loader, verbose=True):
 
         return best_loss
 
-    device = config.device
+    device = args.device
 
     model = Model()
 
@@ -225,13 +248,13 @@ def run(config, train_loader, test_loader, verbose=True):
 
     valid_dl = test_loader
 
-    optimizer = optim.AdamW(model.parameters(), lr=config['lr'], weight_decay=0.01)
+    optimizer = optim.AdamW(model.parameters(), lr=args['lr'], weight_decay=0.01)
     lr_scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=10 * len(train_dl))
 
     model = model.to(device)
 
     best_loss = 9999
-    for epoch in range(config["num_epochs"]):
+    for epoch in range(args["num_epochs"]):
         print(f"Epoch Started:{epoch}")
         best_loss = train_and_evaluate_loop(train_dl, valid_dl, model, loss_fn,
                                             optimizer, epoch, best_loss,

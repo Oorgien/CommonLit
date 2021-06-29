@@ -36,49 +36,24 @@ def rmse_score(y_true, y_pred):
     return np.sqrt(mean_squared_error(y_true, y_pred))
 
 
-def prepare_data(config):
-    train_data = pd.read_csv(config.train_data_path)
-    test_data = pd.read_csv(config.test_data_path)
-    sample = pd.read_csv(config.sample_path)
-
-    config.train_data = train_data
-    config.test_data = test_data
-    config.sample = sample
-
-    target = train_data['target'].to_numpy()
-    target_normed = (target - np.mean(target)) / np.var(target)
-    config.target_mean = np.mean(target)
-    config.target_var = np.var(target)
-    train_data['target_normed'] = target_normed
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        train_data,
-        pd.DataFrame(train_data['target_normed']), test_size=0.33, random_state=config.seed)
-
-    return X_train, X_test, \
-           y_train.rename(columns={"target_normed": "target"}), \
-           y_test.rename(columns={"target_normed": "target"})
-
-
-def init_loaders(config):
-    X_train, X_test, y_train, y_test = prepare_data(config)
+def init_loaders(args, X_train, X_val, y_train, y_val ):
 
     tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
 
-    train_dataset = CLRPDataset(X_train, y_train, tokenizer, config)
-    test_dataset = CLRPDataset(X_test, y_test, tokenizer, config)
+    train_dataset = CLRPDataset(X_train, y_train, tokenizer, args)
+    test_dataset = CLRPDataset(X_val, y_val, tokenizer, args)
 
-    train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=config.batch_size, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
 
     return train_loader, test_loader
 
 
 class CLRPDataset(Dataset):
-    def __init__(self, X, y, tokenizer, config):
+    def __init__(self, X, y, tokenizer, args):
         self.excerpt = X['excerpt'].to_numpy()
         self.targets = y['target'].to_numpy()
-        self.max_len = config.max_len
+        self.max_len = args.max_len
         self.tokenizer = tokenizer
 
     def __getitem__(self, idx):
