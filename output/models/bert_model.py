@@ -68,7 +68,8 @@ class Model(nn.Module):
     def __init__(self):
         super(Model, self).__init__()
         self.roberta = RobertaModel.from_pretrained('roberta-base')
-        self.head = AttentionHead(768,768)
+        self.head = AttentionHead(768, 768)
+
         self.dropout = nn.Dropout(0.1)
         self.linear = nn.Linear(self.head.out_features, 1)
 
@@ -93,15 +94,16 @@ class BertTrainer:
         self.__dict__ = args
         self.model = Model().to(args.device)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=args.lr, weight_decay=0.01)
-        # self.lr_scheduler = get_cosine_schedule_with_warmup(
-        #     self.optimizer, num_warmup_steps=0, num_training_steps= 10 * len(train_loader))
-        self.lr_scheduler = None
+
+        self.lr_scheduler = get_cosine_schedule_with_warmup(
+            self.optimizer, num_warmup_steps=self.warmup, num_training_steps=10 * len(train_loader))
+        # self.lr_scheduler = None
 
         self.train_loader = train_loader
         self.test_loader = test_loader
 
         self.writer = SummaryWriter(
-            log_dir=os.path.join(self.logdir) if self.logdir != '' else None)
+            log_dir=args.summary_dir if self.logdir != '' else None)
         self.best_test_loss = 999999
 
     def resume_training(self):
@@ -116,9 +118,7 @@ class BertTrainer:
                   .format(self.resume, checkpoint['epoch']))
 
     def save_checkpoint(self, epoch, fold, filename='checkpoint.pth.tar'):
-        save_dir = os.path.join(
-                    os.path.join(self.checkpoint_dir, self.model_name),
-                    f'model{fold}')
+        save_dir = os.path.join(self.save_dir, f'model{fold}')
         if not os.path.isdir(save_dir):
             os.makedirs(save_dir)
 
@@ -138,7 +138,6 @@ class BertTrainer:
     def train(self):
         with tqdm(desc="Epoch", total=self.epochs) as progress:
             for epoch in range(self.epochs):
-                print (f"[Epoch {epoch}] started")
                 self.train_epoch(epoch)
 
                 progress.update(1)
@@ -149,17 +148,16 @@ class BertTrainer:
             param_group['lr'] = lr
 
     def train_epoch(self, epoch):
-        self.model.train()
         train_losses = []
         for i, (X_batch, y_batch) in enumerate(self.train_loader):
+            self.model.train()
             self.optimizer.zero_grad()
 
-            y_batch = torch.Tensor(y_batch.float()).to(self.device)
             inputs = {key: val.reshape(val.shape[0], -1).to(self.device) for key, val in X_batch.items()}
             y_pred = self.model(**inputs)
 
             # print(y_pred.detach().cpu().numpy(), y_batch)
-            loss = self.loss_fn(y_pred, y_batch)
+            loss = self.loss_fn(y_pred, y_batch.to(self.device))
             loss.backward()
 
             self.optimizer.step()
@@ -173,8 +171,7 @@ class BertTrainer:
             # Logging
             counter = epoch * len(self.train_loader) + i
 
-            if ((i+1) == len(self.train_loader)):
-                print(f"[Epoch {epoch}] Train loss: ", np.mean(train_losses), '\n')
+            if ((i % self.valid_step == 0) or (i+1) == len(self.train_loader)):
                 eval_loss = self.evaluate(epoch)
                 self.writer.add_scalar("Train loss", np.mean(train_losses), counter)
                 self.writer.add_scalar("Test loss", eval_loss, counter)
@@ -183,21 +180,22 @@ class BertTrainer:
                     self.best_test_loss = eval_loss
                     self.save_checkpoint(epoch, fold=self.fold)
 
+                print(f"[Epoch {epoch}] Train loss: {np.mean(train_losses)} | "
+                      f"[Epoch {epoch}] Validation loss: {eval_loss}")
+
 
     def evaluate(self, epoch):
         test_losses = []
         self.model.eval()
         with torch.no_grad():
             for i,(X_batch, y_batch) in enumerate(self.test_loader):
-                y_batch = torch.Tensor(y_batch.float()).to(self.device)
 
                 inputs = {key: val.reshape(val.shape[0], -1).to(self.device) for key, val in X_batch.items()}
 
                 y_pred = self.model(**inputs)
-                loss = self.loss_fn(y_pred, y_batch)
+                loss = self.loss_fn(y_pred, y_batch.to(self.device))
                 test_losses.append(loss.item())
 
-        print(f"[Epoch {epoch}] Validation loss: ", np.mean(test_losses), '\n')
         return np.mean(test_losses)
 
 
@@ -258,7 +256,7 @@ def run(args, train_loader, test_loader, verbose=True):
     model = model.to(device)
 
     best_loss = 9999
-    for epoch in range(args["num_epochs"]):
+    for epoch in range(args.epochs):
         print(f"Epoch Started:{epoch}")
         best_loss = train_and_evaluate_loop(train_dl, valid_dl, model, loss_fn,
                                             optimizer, epoch, best_loss,

@@ -43,8 +43,20 @@ def init_loaders(args, X_train, X_val, y_train, y_val ):
     train_dataset = CLRPDataset(X_train, y_train, tokenizer, args)
     test_dataset = CLRPDataset(X_val, y_val, tokenizer, args)
 
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        pin_memory=True,
+        drop_last=False
+    )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        pin_memory=True,
+        drop_last=False
+    )
 
     return train_loader, test_loader
 
