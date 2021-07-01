@@ -67,13 +67,20 @@ class AttentionHead(nn.Module):
 class Model(nn.Module):
     def __init__(self):
         super(Model, self).__init__()
-        self.roberta = RobertaModel.from_pretrained('roberta-base')
+        self.roberta = RobertaModel.from_pretrained('roberta-base', output_hidden_states = True)
         self.head = AttentionHead(768, 768)
 
         self.dropout = nn.Dropout(0.1)
         self.linear = nn.Linear(self.head.out_features, 1)
 
         self.init_weights(self.linear)
+        # self.freeze_layers()
+
+    def freeze_layers(self):
+        modules = [self.roberta.embeddings, *self.roberta.encoder.layer[:5]]  # Replace 5 by what you want
+        for module in modules:
+            for param in module.parameters():
+                param.requires_grad = False
 
     def init_weights(self, *blocks):
         for m in blocks:
@@ -82,7 +89,15 @@ class Model(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, **xb):
+        # print (self.roberta(**xb)[2][0].shape, len(self.roberta(**xb)[2]))
         x = self.roberta(**xb)[0]
+
+        # [b_layers, batch_size, max_len, features]
+        # x = self.roberta(**xb)[2]
+
+        # [batch_size, 4 * max_len, features]
+        # x = torch.cat(x[-4:], dim=1)
+
         x = self.head(x)
         x = self.dropout(x)
         x = self.linear(x)
@@ -90,13 +105,13 @@ class Model(nn.Module):
 
 
 class BertTrainer:
-    def __init__(self, args, train_loader, test_loader):
+    def __init__(self, args, model, optimizer, train_loader, test_loader):
         self.__dict__ = args
-        self.model = Model().to(args.device)
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=args.lr, weight_decay=0.01)
+        self.model = model
+        self.optimizer = optimizer
 
         self.lr_scheduler = get_cosine_schedule_with_warmup(
-            self.optimizer, num_warmup_steps=self.warmup, num_training_steps=10 * len(train_loader))
+            self.optimizer, num_warmup_steps=self.warmup, num_training_steps=self.epochs * len(train_loader))
         # self.lr_scheduler = None
 
         self.train_loader = train_loader
@@ -129,6 +144,7 @@ class BertTrainer:
                 'optimizer': self.optimizer.state_dict(),
             }
         torch.save(state, os.path.join(save_dir, filename))
+        print (f"Saved if {os.path.join(save_dir, filename)}")
 
     def loss_fn(self, outputs, targets):
         outputs = outputs.view(-1)
@@ -160,19 +176,20 @@ class BertTrainer:
             loss = self.loss_fn(y_pred, y_batch.to(self.device))
             loss.backward()
 
+            counter = epoch * len(self.train_loader) + i
+
             self.optimizer.step()
-            if self.lr_scheduler:
+            if self.lr_change == 'scheduler':
                 self.lr_scheduler.step()
-            else:
-                self.adjust_lr(i)
+            elif self.le_change == 'adjust':
+                self.adjust_lr(counter)
 
             train_losses.append(loss.item())
 
             # Logging
-            counter = epoch * len(self.train_loader) + i
 
             if ((i % self.valid_step == 0) or (i+1) == len(self.train_loader)):
-                eval_loss = self.evaluate(epoch)
+                eval_loss = self.evaluate()
                 self.writer.add_scalar("Train loss", np.mean(train_losses), counter)
                 self.writer.add_scalar("Test loss", eval_loss, counter)
 
@@ -180,11 +197,11 @@ class BertTrainer:
                     self.best_test_loss = eval_loss
                     self.save_checkpoint(epoch, fold=self.fold)
 
-                print(f"[Epoch {epoch}] Train loss: {np.mean(train_losses)} | "
-                      f"[Epoch {epoch}] Validation loss: {eval_loss}")
+                    print(f"Step {i}/{len(self.train_loader)} "
+                          f"[Epoch {epoch}] Train loss: {np.mean(train_losses)} | "
+                          f"[Epoch {epoch}] Validation loss: {eval_loss}")
 
-
-    def evaluate(self, epoch):
+    def evaluate(self):
         test_losses = []
         self.model.eval()
         with torch.no_grad():

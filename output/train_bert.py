@@ -7,7 +7,7 @@ import torch
 from utils import dotdict
 from sklearn.model_selection import train_test_split, KFold, StratifiedKFold, StratifiedShuffleSplit
 from prepare_data import init_loaders
-from models.bert_model import BertTrainer, run
+from models.bert_model import BertTrainer, run, Model
 
 import os
 
@@ -42,12 +42,12 @@ if __name__ == "__main__":
         'logdir': 'runs',
         'checkpoint_dir': 'checkpoints',
         'model_name': 'Bert_adamW',
-        'model_log_name': 'Stratified_loader_shuffle_warmup',
+        'model_log_name': '4layes_lr2e-5',
 
         'norm': False,
         'nfolds': 5,
         'batch_size': 16,
-        'epochs': 6,
+        'epochs': 10,
         'max_len': 256,
         'valid_step': 10,
 
@@ -55,6 +55,7 @@ if __name__ == "__main__":
         'warmup': 0,
         'lr_coef': 0.99,
         'lr_interval': 5,
+        'lr_change': 'scheduler',
 
         'resume': '',
         'train_data_path': '../input/commonlitreadabilityprize/train.csv',
@@ -113,5 +114,8 @@ if __name__ == "__main__":
             pd.DataFrame(y_val, columns=['target']))
         # run(args, train_loader, test_loader)
 
-        bert_trainer = BertTrainer(args, train_loader, test_loader)
+        model = Model().to(args.device)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
+
+        bert_trainer = BertTrainer(args, model, optimizer, train_loader, test_loader)
         bert_trainer.train()
